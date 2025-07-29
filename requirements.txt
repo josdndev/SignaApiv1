@@ -1,8 +1,9 @@
 fastapi
-uvicorn
+uvicorn[standard]
 opencv-python-headless
 scipy
 cvzone
 numpy
 mediapipe
 sqlmodel
+python-multipart

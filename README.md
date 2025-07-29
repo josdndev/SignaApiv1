@@ -96,6 +96,18 @@ const doctores = await response.json();
 - La base de datos SQLite se reiniciará en cada despliegue. Para producción, considera usar PostgreSQL o MySQL
 - Railway asignará automáticamente el puerto a través de la variable de entorno `$PORT`
 - El archivo `Procfile` ya está configurado para usar `api.main:app`
+- **Solución para OpenCV**: Se ha incluido un `Dockerfile` que instala todas las dependencias del sistema necesarias para OpenCV
+- **Manejo de errores**: La aplicación ahora maneja errores de importación de OpenCV y proporciona mensajes informativos
+
+### Opciones de despliegue
+
+#### Opción 1: Despliegue automático (recomendado)
+Railway detectará automáticamente que es una aplicación Python y usará el `Procfile`.
+
+#### Opción 2: Despliegue con Docker
+Si tienes problemas con OpenCV, puedes usar el `Dockerfile` incluido:
+1. En Railway, selecciona "Deploy from Dockerfile"
+2. Railway usará el `Dockerfile` que incluye todas las dependencias del sistema necesarias
 
 ## Contacto
 Para dudas o soporte, contacta al equipo de desarrollo.

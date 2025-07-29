@@ -1,9 +1,31 @@
 import numpy as np
-import cv2
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: OpenCV not available: {e}")
+    CV2_AVAILABLE = False
+
 from scipy import signal
-from cvzone.FaceDetectionModule import FaceDetector
+
+# Importar FaceDetector solo si OpenCV está disponible
+if CV2_AVAILABLE:
+    try:
+        from cvzone.FaceDetectionModule import FaceDetector
+        FACE_DETECTOR_AVAILABLE = True
+    except ImportError as e:
+        print(f"Warning: FaceDetector not available: {e}")
+        FACE_DETECTOR_AVAILABLE = False
+else:
+    FACE_DETECTOR_AVAILABLE = False
 
 def read_video_with_face_detection_and_FS(video_file_path):
+    if not CV2_AVAILABLE:
+        raise ImportError("OpenCV is not available. Cannot process video.")
+    
+    if not FACE_DETECTOR_AVAILABLE:
+        raise ImportError("FaceDetector is not available. Cannot process video.")
+    
     cap = cv2.VideoCapture(video_file_path)
     FS = cap.get(cv2.CAP_PROP_FPS)
     if FS <= 0:

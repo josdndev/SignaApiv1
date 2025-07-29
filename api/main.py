@@ -2,8 +2,22 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 import tempfile, os
 import numpy as np
-from .rppg_core import read_video_with_face_detection_and_FS, CHROME_DEHAAN, extract_heart_rate
-from .vitails import extract_respiratory_rate, calculate_hrv
+
+# Importar módulos con manejo de errores
+try:
+    from .rppg_core import read_video_with_face_detection_and_FS, CHROME_DEHAAN, extract_heart_rate
+    RPPG_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: RPPG module not available: {e}")
+    RPPG_AVAILABLE = False
+
+try:
+    from .vitails import extract_respiratory_rate, calculate_hrv
+    VITALS_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Vitals module not available: {e}")
+    VITALS_AVAILABLE = False
+
 from sqlmodel import SQLModel, Session, create_engine, select
 from .models import Doctor, Paciente, HistoriaClinica, Visita, Diagnostico
 
@@ -120,33 +134,51 @@ def listar_visitas_con_pacientes():
 
 @app.post("/rppg/")
 async def analyze_video(file: UploadFile = File(...)):
-    # Crear un archivo temporal
-    with tempfile.NamedTemporaryFile(delete=True) as tmp:
-        # Guardar el archivo subido en el archivo temporal
-        tmp.write(await file.read())
-        tmp.flush()
+    if not RPPG_AVAILABLE or not VITALS_AVAILABLE:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "RPPG processing is not available. OpenCV or related dependencies are not properly installed.",
+                "message": "Please check the server configuration."
+            }
+        )
+    
+    try:
+        # Crear un archivo temporal
+        with tempfile.NamedTemporaryFile(delete=True) as tmp:
+            # Guardar el archivo subido en el archivo temporal
+            tmp.write(await file.read())
+            tmp.flush()
 
-        # Leer el video y detectar la cara
-        fps, time, sig, bvp, ibi, hr = read_video_with_face_detection_and_FS(tmp.name, CHROME_DEHAAN)
+            # Leer el video y detectar la cara
+            fps, time, sig, bvp, ibi, hr = read_video_with_face_detection_and_FS(tmp.name, CHROME_DEHAAN)
 
-        # Calcular la tasa de respiración
-        respiratory_rate = extract_respiratory_rate(sig, fps)
+            # Calcular la tasa de respiración
+            respiratory_rate = extract_respiratory_rate(sig, fps)
 
-        # Calcular la variabilidad de la frecuencia cardíaca (HRV)
-        hrv = calculate_hrv(ibi)
+            # Calcular la variabilidad de la frecuencia cardíaca (HRV)
+            hrv = calculate_hrv(ibi)
 
-        # Retornar los resultados
-        return JSONResponse(content={
-            "message": "Video processed successfully",
-            "fps": fps,
-            "time": time,
-            "sig": sig.tolist(),
-            "bvp": bvp.tolist(),
-            "ibi": ibi.tolist(),
-            "hr": hr.tolist(),
-            "respiratory_rate": respiratory_rate,
-            "hrv": hrv
-        })
+            # Retornar los resultados
+            return JSONResponse(content={
+                "message": "Video processed successfully",
+                "fps": fps,
+                "time": time,
+                "sig": sig.tolist(),
+                "bvp": bvp.tolist(),
+                "ibi": ibi.tolist(),
+                "hr": hr.tolist(),
+                "respiratory_rate": respiratory_rate,
+                "hrv": hrv
+            })
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Error processing video",
+                "message": str(e)
+            }
+        )
 
 # Endpoint para registrar diagnostico
 @app.post("/diagnosticos/")

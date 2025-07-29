@@ -25,6 +25,16 @@ app = FastAPI()
 engine = create_engine("sqlite:///database.db")
 SQLModel.metadata.create_all(engine)
 
+# Endpoint de healthcheck
+@app.get("/")
+def health_check():
+    return {"status": "healthy", "message": "SignaApi is running"}
+
+# Endpoint de healthcheck alternativo
+@app.get("/health")
+def health_check_alt():
+    return {"status": "healthy", "message": "SignaApi is running"}
+
 # Endpoint para registrar doctor
 @app.post("/doctores/")
 def crear_doctor(nombre: str, email: str, google_id: str = None, especialidad: str = None):

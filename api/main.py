@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, status
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, status, Body
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -9,6 +9,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
 import traceback
+from pydantic import BaseModel
 
 # Importar manejadores de eventos y errores
 from .error_handlers import (
@@ -71,12 +72,15 @@ app = FastAPI(
 app.add_middleware(EventMonitoringMiddleware)
 app.add_middleware(SecurityMiddleware)
 app.add_middleware(PerformanceMiddleware)
+
+# Configurar CORS - DEBE ir ANTES de los exception handlers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # En producción, especificar dominios específicos
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # Configurar exception handlers
@@ -87,6 +91,36 @@ app.add_exception_handler(Exception, general_exception_handler)
 # Configurar base de datos
 engine = create_engine("sqlite:///database.db", echo=False)
 SQLModel.metadata.create_all(engine)
+
+# Modelos Pydantic para validación de entrada
+class DoctorCreate(BaseModel):
+    nombre: str
+    email: str
+    google_id: Optional[str] = None
+    especialidad: Optional[str] = None
+
+class PacienteCreate(BaseModel):
+    nombre: str
+    cedula: str
+    edad: int
+
+class HistoriaCreate(BaseModel):
+    paciente_id: int
+    fecha: str
+
+class VisitaCreate(BaseModel):
+    historia_id: int
+    hora_entrada: str
+    evaluacion_triaje: str
+    prediagnostico: str
+    especialidad: str
+    numero_visita: int
+
+class DiagnosticoCreate(BaseModel):
+    visita_id: int
+    diagnostico: str
+    resultado_rppg: str
+    informe_prediagnostico: str
 
 # Middleware para logging de requests
 @app.middleware("http")
@@ -234,6 +268,15 @@ def health_check():
 def health_check_alt():
     return health_check()
 
+# Endpoint de prueba para CORS
+@app.get("/test-cors")
+def test_cors():
+    return {
+        "message": "CORS test successful",
+        "timestamp": datetime.now().isoformat(),
+        "cors_enabled": True
+    }
+
 # Endpoint para métricas y monitoreo
 @app.get("/metrics")
 def get_metrics():
@@ -260,10 +303,10 @@ def get_metrics():
 
 # Endpoint para registrar doctor
 @app.post("/doctores/")
-def crear_doctor(nombre: str, email: str, google_id: Optional[str] = None, especialidad: Optional[str] = None):
+def crear_doctor(doctor_data: DoctorCreate):
     try:
         # Validar datos
-        validated_data = validate_doctor_data(nombre, email, especialidad)
+        validated_data = validate_doctor_data(doctor_data.nombre, doctor_data.email, doctor_data.especialidad)
         
         # Verificar si el email ya existe
         with Session(engine) as session:
@@ -281,7 +324,7 @@ def crear_doctor(nombre: str, email: str, google_id: Optional[str] = None, espec
             doctor = Doctor(
                 nombre=validated_data["nombre"],
                 email=validated_data["email"],
-                google_id=google_id,
+                google_id=doctor_data.google_id,
                 especialidad=validated_data["especialidad"]
             )
             
@@ -328,10 +371,10 @@ def listar_doctores():
 
 # Endpoint para registrar paciente
 @app.post("/pacientes/")
-def crear_paciente(nombre: str, cedula: str, edad: int):
+def crear_paciente(paciente_data: PacienteCreate):
     try:
         # Validar datos
-        validated_data = validate_paciente_data(nombre, cedula, edad)
+        validated_data = validate_paciente_data(paciente_data.nombre, paciente_data.cedula, paciente_data.edad)
         
         # Verificar si la cédula ya existe
         with Session(engine) as session:
@@ -395,10 +438,10 @@ def listar_pacientes():
 
 # Endpoint para registrar historia clínica
 @app.post("/historias/")
-def crear_historia(paciente_id: int, fecha: str):
+def crear_historia(historia_data: HistoriaCreate):
     try:
         # Validar datos
-        if not fecha or len(fecha.strip()) == 0:
+        if not historia_data.fecha or len(historia_data.fecha.strip()) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="La fecha es requerida"
@@ -406,7 +449,7 @@ def crear_historia(paciente_id: int, fecha: str):
         
         with Session(engine) as session:
             # Verificar que el paciente existe
-            paciente = session.exec(select(Paciente).where(Paciente.id == paciente_id)).first()
+            paciente = session.exec(select(Paciente).where(Paciente.id == historia_data.paciente_id)).first()
             if not paciente:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -415,15 +458,15 @@ def crear_historia(paciente_id: int, fecha: str):
             
             # Crear historia
             historia = HistoriaClinica(
-                paciente_id=paciente_id,
-                fecha=fecha.strip()
+                paciente_id=historia_data.paciente_id,
+                fecha=historia_data.fecha.strip()
             )
             
             session.add(historia)
             session.commit()
             session.refresh(historia)
             
-            logger.info(f"Historia clínica creada para paciente {paciente_id}")
+            logger.info(f"Historia clínica creada para paciente {historia_data.paciente_id}")
             return {
                 "message": "Historia clínica creada exitosamente",
                 "historia": historia,
@@ -462,35 +505,28 @@ def listar_historias():
 
 # Endpoint para registrar visita
 @app.post("/visitas/")
-def crear_visita(
-    historia_id: int, 
-    hora_entrada: str, 
-    evaluacion_triaje: str, 
-    prediagnostico: str, 
-    especialidad: str, 
-    numero_visita: int
-):
+def crear_visita(visita_data: VisitaCreate):
     try:
         # Validar datos
-        if not hora_entrada or len(hora_entrada.strip()) == 0:
+        if not visita_data.hora_entrada or len(visita_data.hora_entrada.strip()) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="La hora de entrada es requerida"
             )
         
-        if not evaluacion_triaje or len(evaluacion_triaje.strip()) == 0:
+        if not visita_data.evaluacion_triaje or len(visita_data.evaluacion_triaje.strip()) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="La evaluación de triaje es requerida"
             )
         
-        if not especialidad or len(especialidad.strip()) == 0:
+        if not visita_data.especialidad or len(visita_data.especialidad.strip()) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="La especialidad es requerida"
             )
         
-        if not isinstance(numero_visita, int) or numero_visita < 1:
+        if not isinstance(visita_data.numero_visita, int) or visita_data.numero_visita < 1:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="El número de visita debe ser un número positivo"
@@ -498,7 +534,7 @@ def crear_visita(
         
         with Session(engine) as session:
             # Verificar que la historia existe
-            historia = session.exec(select(HistoriaClinica).where(HistoriaClinica.id == historia_id)).first()
+            historia = session.exec(select(HistoriaClinica).where(HistoriaClinica.id == visita_data.historia_id)).first()
             if not historia:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -507,19 +543,19 @@ def crear_visita(
             
             # Crear visita
             visita = Visita(
-                historia_id=historia_id,
-                hora_entrada=hora_entrada.strip(),
-                evaluacion_triaje=evaluacion_triaje.strip(),
-                prediagnostico=prediagnostico.strip(),
-                especialidad=especialidad.strip(),
-                numero_visita=numero_visita
+                historia_id=visita_data.historia_id,
+                hora_entrada=visita_data.hora_entrada.strip(),
+                evaluacion_triaje=visita_data.evaluacion_triaje.strip(),
+                prediagnostico=visita_data.prediagnostico.strip(),
+                especialidad=visita_data.especialidad.strip(),
+                numero_visita=visita_data.numero_visita
             )
             
             session.add(visita)
             session.commit()
             session.refresh(visita)
             
-            logger.info(f"Visita creada para historia {historia_id}")
+            logger.info(f"Visita creada para historia {visita_data.historia_id}")
             return {
                 "message": "Visita creada exitosamente",
                 "visita": visita,
@@ -688,16 +724,16 @@ async def analyze_video(file: UploadFile = File(...)):
 
 # Endpoint para registrar diagnostico
 @app.post("/diagnosticos/")
-def crear_diagnostico(visita_id: int, diagnostico: str, resultado_rppg: str, informe_prediagnostico: str):
+def crear_diagnostico(diagnostico_data: DiagnosticoCreate):
     try:
         # Validar datos
-        if not diagnostico or len(diagnostico.strip()) == 0:
+        if not diagnostico_data.diagnostico or len(diagnostico_data.diagnostico.strip()) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="El diagnóstico es requerido"
             )
         
-        if not resultado_rppg or len(resultado_rppg.strip()) == 0:
+        if not diagnostico_data.resultado_rppg or len(diagnostico_data.resultado_rppg.strip()) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="El resultado RPGP es requerido"
@@ -705,7 +741,7 @@ def crear_diagnostico(visita_id: int, diagnostico: str, resultado_rppg: str, inf
         
         with Session(engine) as session:
             # Verificar que la visita existe
-            visita = session.exec(select(Visita).where(Visita.id == visita_id)).first()
+            visita = session.exec(select(Visita).where(Visita.id == diagnostico_data.visita_id)).first()
             if not visita:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -714,17 +750,17 @@ def crear_diagnostico(visita_id: int, diagnostico: str, resultado_rppg: str, inf
             
             # Crear diagnóstico
             diag = Diagnostico(
-                visita_id=visita_id,
-                diagnostico=diagnostico.strip(),
-                resultado_rppg=resultado_rppg.strip(),
-                informe_prediagnostico=informe_prediagnostico.strip()
+                visita_id=diagnostico_data.visita_id,
+                diagnostico=diagnostico_data.diagnostico.strip(),
+                resultado_rppg=diagnostico_data.resultado_rppg.strip(),
+                informe_prediagnostico=diagnostico_data.informe_prediagnostico.strip()
             )
             
             session.add(diag)
             session.commit()
             session.refresh(diag)
             
-            logger.info(f"Diagnóstico creado para visita {visita_id}")
+            logger.info(f"Diagnóstico creado para visita {diagnostico_data.visita_id}")
             return {
                 "message": "Diagnóstico creado exitosamente",
                 "diagnostico": diag,

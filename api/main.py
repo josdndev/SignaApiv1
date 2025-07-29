@@ -1,164 +1,650 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, status
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import tempfile, os
 import numpy as np
+import logging
+from datetime import datetime
+from typing import Dict, Any, Optional
+import traceback
+
+# Importar manejadores de eventos y errores
+from .error_handlers import (
+    validation_exception_handler,
+    http_exception_handler,
+    general_exception_handler,
+    validate_required_fields,
+    validate_email,
+    validate_age,
+    validate_string_length,
+    validate_file_upload,
+    handle_database_operation,
+    create_success_response,
+    create_list_response,
+    SignaApiError,
+    ValidationError,
+    DatabaseError,
+    ResourceNotFoundError,
+    DuplicateResourceError
+)
+
+from .middleware import (
+    EventMonitoringMiddleware,
+    SecurityMiddleware,
+    PerformanceMiddleware,
+    set_event_middleware
+)
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Importar módulos con manejo de errores
 try:
     from .rppg_core import read_video_with_face_detection_and_FS, CHROME_DEHAAN, extract_heart_rate
     RPPG_AVAILABLE = True
+    logger.info("RPPG module loaded successfully")
 except ImportError as e:
-    print(f"Warning: RPPG module not available: {e}")
+    logger.warning(f"RPPG module not available: {e}")
     RPPG_AVAILABLE = False
 
 try:
     from .vitails import extract_respiratory_rate, calculate_hrv
     VITALS_AVAILABLE = True
+    logger.info("Vitals module loaded successfully")
 except ImportError as e:
-    print(f"Warning: Vitals module not available: {e}")
+    logger.warning(f"Vitals module not available: {e}")
     VITALS_AVAILABLE = False
 
 from sqlmodel import SQLModel, Session, create_engine, select
 from .models import Doctor, Paciente, HistoriaClinica, Visita, Diagnostico
 
-app = FastAPI()
-engine = create_engine("sqlite:///database.db")
+app = FastAPI(
+    title="SignaApi",
+    description="API clínica para gestión de pacientes, doctores, historias clínicas, visitas y diagnósticos",
+    version="1.0.0"
+)
+
+# Configurar middlewares
+app.add_middleware(EventMonitoringMiddleware)
+app.add_middleware(SecurityMiddleware)
+app.add_middleware(PerformanceMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # En producción, especificar dominios específicos
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configurar exception handlers
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(Exception, general_exception_handler)
+
+# Configurar base de datos
+engine = create_engine("sqlite:///database.db", echo=False)
 SQLModel.metadata.create_all(engine)
+
+# Middleware para logging de requests
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = datetime.now()
+    
+    # Log request
+    logger.info(f"Request: {request.method} {request.url}")
+    logger.info(f"Client: {request.client.host if request.client else 'Unknown'}")
+    
+    try:
+        response = await call_next(request)
+        
+        # Log response
+        process_time = (datetime.now() - start_time).total_seconds()
+        logger.info(f"Response: {response.status_code} - {process_time:.3f}s")
+        
+        return response
+    except Exception as e:
+        # Log error
+        process_time = (datetime.now() - start_time).total_seconds()
+        logger.error(f"Error: {str(e)} - {process_time:.3f}s")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise
+
+# Exception handlers
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error(f"Validation error: {exc.errors()}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "Validation Error",
+            "message": "Los datos enviados no son válidos",
+            "details": exc.errors(),
+            "timestamp": datetime.now().isoformat()
+        }
+    )
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    logger.error(f"HTTP error {exc.status_code}: {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": "HTTP Error",
+            "message": exc.detail,
+            "status_code": exc.status_code,
+            "timestamp": datetime.now().isoformat()
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unexpected error: {str(exc)}")
+    logger.error(f"Traceback: {traceback.format_exc()}")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": "Internal Server Error",
+            "message": "Ha ocurrido un error interno del servidor",
+            "timestamp": datetime.now().isoformat()
+        }
+    )
+
+# Función helper para manejo de sesiones de base de datos
+def get_db_session():
+    try:
+        with Session(engine) as session:
+            yield session
+    except Exception as e:
+        logger.error(f"Database session error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error de conexión con la base de datos"
+        )
+
+# Función helper para validar datos
+def validate_doctor_data(nombre: str, email: str, especialidad: Optional[str] = None) -> Dict[str, Any]:
+    errors = []
+    
+    if not nombre or len(nombre.strip()) < 2:
+        errors.append("El nombre debe tener al menos 2 caracteres")
+    
+    if not email or '@' not in email:
+        errors.append("El email no es válido")
+    
+    if especialidad and len(especialidad.strip()) < 2:
+        errors.append("La especialidad debe tener al menos 2 caracteres")
+    
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Datos inválidos", "errors": errors}
+        )
+    
+    return {"nombre": nombre.strip(), "email": email.strip(), "especialidad": especialidad.strip() if especialidad else None}
+
+def validate_paciente_data(nombre: str, cedula: str, edad: int) -> Dict[str, Any]:
+    errors = []
+    
+    if not nombre or len(nombre.strip()) < 2:
+        errors.append("El nombre debe tener al menos 2 caracteres")
+    
+    if not cedula or len(cedula.strip()) < 5:
+        errors.append("La cédula debe tener al menos 5 caracteres")
+    
+    if not isinstance(edad, int) or edad < 0 or edad > 150:
+        errors.append("La edad debe ser un número entre 0 y 150")
+    
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Datos inválidos", "errors": errors}
+        )
+    
+    return {"nombre": nombre.strip(), "cedula": cedula.strip(), "edad": edad}
 
 # Endpoint de healthcheck
 @app.get("/")
 def health_check():
-    return {"status": "healthy", "message": "SignaApi is running"}
+    try:
+        # Verificar conexión a la base de datos
+        with Session(engine) as session:
+            session.exec(select(Doctor)).first()
+        
+        return {
+            "status": "healthy", 
+            "message": "SignaApi is running",
+            "timestamp": datetime.now().isoformat(),
+            "modules": {
+                "rppg": RPPG_AVAILABLE,
+                "vitals": VITALS_AVAILABLE
+            }
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Servicio no disponible"
+        )
 
 # Endpoint de healthcheck alternativo
 @app.get("/health")
 def health_check_alt():
-    return {"status": "healthy", "message": "SignaApi is running"}
+    return health_check()
+
+# Endpoint para métricas y monitoreo
+@app.get("/metrics")
+def get_metrics():
+    try:
+        from .middleware import get_event_middleware
+        
+        event_middleware = get_event_middleware()
+        metrics = event_middleware.get_metrics() if event_middleware else {}
+        
+        return {
+            "metrics": metrics,
+            "system_info": {
+                "rppg_available": RPPG_AVAILABLE,
+                "vitals_available": VITALS_AVAILABLE,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting metrics: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error obteniendo métricas"
+        )
 
 # Endpoint para registrar doctor
 @app.post("/doctores/")
-def crear_doctor(nombre: str, email: str, google_id: str = None, especialidad: str = None):
-    doctor = Doctor(nombre=nombre, email=email, google_id=google_id, especialidad=especialidad)
-    with Session(engine) as session:
-        session.add(doctor)
-        session.commit()
-        session.refresh(doctor)
-    return doctor
+def crear_doctor(nombre: str, email: str, google_id: Optional[str] = None, especialidad: Optional[str] = None):
+    try:
+        # Validar datos
+        validated_data = validate_doctor_data(nombre, email, especialidad)
+        
+        # Verificar si el email ya existe
+        with Session(engine) as session:
+            existing_doctor = session.exec(
+                select(Doctor).where(Doctor.email == validated_data["email"])
+            ).first()
+            
+            if existing_doctor:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ya existe un doctor con este email"
+                )
+            
+            # Crear doctor
+            doctor = Doctor(
+                nombre=validated_data["nombre"],
+                email=validated_data["email"],
+                google_id=google_id,
+                especialidad=validated_data["especialidad"]
+            )
+            
+            session.add(doctor)
+            session.commit()
+            session.refresh(doctor)
+            
+            logger.info(f"Doctor creado: {doctor.email}")
+            return {
+                "message": "Doctor creado exitosamente",
+                "doctor": doctor,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creando doctor: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 # Endpoint para consultar doctores
 @app.get("/doctores/")
 def listar_doctores():
-    with Session(engine) as session:
-        doctores = session.exec(select(Doctor)).all()
-    return doctores
+    try:
+        with Session(engine) as session:
+            doctores = session.exec(select(Doctor)).all()
+            
+        logger.info(f"Listados {len(doctores)} doctores")
+        return {
+            "doctores": doctores,
+            "count": len(doctores),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listando doctores: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 # Endpoint para registrar paciente
 @app.post("/pacientes/")
-def crear_paciente(nombre: str, cedula: str, edad: int, especialista: str, hora_entrada: str, estado_triaje: str):
-    paciente = Paciente(nombre=nombre, cedula=cedula, edad=edad, especialista=especialista, hora_entrada=hora_entrada, estado_triaje=estado_triaje)
-    with Session(engine) as session:
-        session.add(paciente)
-        session.commit()
-        session.refresh(paciente)
-    return paciente
+def crear_paciente(nombre: str, cedula: str, edad: int):
+    try:
+        # Validar datos
+        validated_data = validate_paciente_data(nombre, cedula, edad)
+        
+        # Verificar si la cédula ya existe
+        with Session(engine) as session:
+            existing_paciente = session.exec(
+                select(Paciente).where(Paciente.cedula == validated_data["cedula"])
+            ).first()
+            
+            if existing_paciente:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ya existe un paciente con esta cédula"
+                )
+            
+            # Crear paciente
+            paciente = Paciente(
+                nombre=validated_data["nombre"],
+                cedula=validated_data["cedula"],
+                edad=validated_data["edad"]
+            )
+            
+            session.add(paciente)
+            session.commit()
+            session.refresh(paciente)
+            
+            logger.info(f"Paciente creado: {paciente.cedula}")
+            return {
+                "message": "Paciente creado exitosamente",
+                "paciente": paciente,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creando paciente: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 # Endpoint para consultar pacientes
 @app.get("/pacientes/")
 def listar_pacientes():
-    with Session(engine) as session:
-        pacientes = session.exec(select(Paciente)).all()
-    return pacientes
+    try:
+        with Session(engine) as session:
+            pacientes = session.exec(select(Paciente)).all()
+            
+        logger.info(f"Listados {len(pacientes)} pacientes")
+        return {
+            "pacientes": pacientes,
+            "count": len(pacientes),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listando pacientes: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 # Endpoint para registrar historia clínica
 @app.post("/historias/")
 def crear_historia(paciente_id: int, fecha: str):
-    historia = HistoriaClinica(paciente_id=paciente_id, fecha=fecha)
-    with Session(engine) as session:
-        session.add(historia)
-        session.commit()
-        session.refresh(historia)
-    return historia
+    try:
+        # Validar datos
+        if not fecha or len(fecha.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La fecha es requerida"
+            )
+        
+        with Session(engine) as session:
+            # Verificar que el paciente existe
+            paciente = session.exec(select(Paciente).where(Paciente.id == paciente_id)).first()
+            if not paciente:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Paciente no encontrado"
+                )
+            
+            # Crear historia
+            historia = HistoriaClinica(
+                paciente_id=paciente_id,
+                fecha=fecha.strip()
+            )
+            
+            session.add(historia)
+            session.commit()
+            session.refresh(historia)
+            
+            logger.info(f"Historia clínica creada para paciente {paciente_id}")
+            return {
+                "message": "Historia clínica creada exitosamente",
+                "historia": historia,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creando historia clínica: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 # Endpoint para consultar historias clínicas
 @app.get("/historias/")
 def listar_historias():
-    with Session(engine) as session:
-        historias = session.exec(select(HistoriaClinica)).all()
-    return historias
+    try:
+        with Session(engine) as session:
+            historias = session.exec(select(HistoriaClinica)).all()
+            
+        logger.info(f"Listadas {len(historias)} historias clínicas")
+        return {
+            "historias": historias,
+            "count": len(historias),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listando historias: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 # Endpoint para registrar visita
 @app.post("/visitas/")
-def crear_visita(historia_id: int, hora_entrada: str, evaluacion_triaje: str, prediagnostico: str, especialidad: str, numero_visita: int):
-    visita = Visita(
-        historia_id=historia_id,
-        hora_entrada=hora_entrada,
-        evaluacion_triaje=evaluacion_triaje,
-        prediagnostico=prediagnostico,
-        especialidad=especialidad,
-        numero_visita=numero_visita
-    )
-    with Session(engine) as session:
-        session.add(visita)
-        session.commit()
-        session.refresh(visita)
-    return visita
+def crear_visita(
+    historia_id: int, 
+    hora_entrada: str, 
+    evaluacion_triaje: str, 
+    prediagnostico: str, 
+    especialidad: str, 
+    numero_visita: int
+):
+    try:
+        # Validar datos
+        if not hora_entrada or len(hora_entrada.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La hora de entrada es requerida"
+            )
+        
+        if not evaluacion_triaje or len(evaluacion_triaje.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La evaluación de triaje es requerida"
+            )
+        
+        if not especialidad or len(especialidad.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La especialidad es requerida"
+            )
+        
+        if not isinstance(numero_visita, int) or numero_visita < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El número de visita debe ser un número positivo"
+            )
+        
+        with Session(engine) as session:
+            # Verificar que la historia existe
+            historia = session.exec(select(HistoriaClinica).where(HistoriaClinica.id == historia_id)).first()
+            if not historia:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Historia clínica no encontrada"
+                )
+            
+            # Crear visita
+            visita = Visita(
+                historia_id=historia_id,
+                hora_entrada=hora_entrada.strip(),
+                evaluacion_triaje=evaluacion_triaje.strip(),
+                prediagnostico=prediagnostico.strip(),
+                especialidad=especialidad.strip(),
+                numero_visita=numero_visita
+            )
+            
+            session.add(visita)
+            session.commit()
+            session.refresh(visita)
+            
+            logger.info(f"Visita creada para historia {historia_id}")
+            return {
+                "message": "Visita creada exitosamente",
+                "visita": visita,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creando visita: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 # Endpoint para consultar visitas
 @app.get("/visitas/")
 def listar_visitas():
-    with Session(engine) as session:
-        visitas = session.exec(select(Visita)).all()
-    return visitas
+    try:
+        with Session(engine) as session:
+            visitas = session.exec(select(Visita)).all()
+            
+        logger.info(f"Listadas {len(visitas)} visitas")
+        return {
+            "visitas": visitas,
+            "count": len(visitas),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listando visitas: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 # Endpoint para obtener todas las visitas con los datos del paciente
 @app.get("/visitas_con_pacientes/")
 def listar_visitas_con_pacientes():
-    with Session(engine) as session:
-        visitas = session.exec(
-            select(Visita, Paciente)
-            .join(HistoriaClinica, HistoriaClinica.id == Visita.historia_id)
-            .join(Paciente, Paciente.id == HistoriaClinica.paciente_id)
-        ).all()
-        
-        resultado = [
-            {
-                "visita": {
-                    "id": visita.Visita.id,
-                    "hora_entrada": visita.Visita.hora_entrada,
-                    "evaluacion_triaje": visita.Visita.evaluacion_triaje,
-                    "prediagnostico": visita.Visita.prediagnostico,
-                    "especialidad": visita.Visita.especialidad,
-                    "numero_visita": visita.Visita.numero_visita
-                },
-                "paciente": {
-                    "id": visita.Paciente.id,
-                    "nombre": visita.Paciente.nombre,
-                    "cedula": visita.Paciente.cedula,
-                    "edad": visita.Paciente.edad
+    try:
+        with Session(engine) as session:
+            visitas = session.exec(
+                select(Visita, Paciente)
+                .join(HistoriaClinica, HistoriaClinica.id == Visita.historia_id)
+                .join(Paciente, Paciente.id == HistoriaClinica.paciente_id)
+            ).all()
+            
+            resultado = [
+                {
+                    "visita": {
+                        "id": visita.Visita.id,
+                        "hora_entrada": visita.Visita.hora_entrada,
+                        "evaluacion_triaje": visita.Visita.evaluacion_triaje,
+                        "prediagnostico": visita.Visita.prediagnostico,
+                        "especialidad": visita.Visita.especialidad,
+                        "numero_visita": visita.Visita.numero_visita
+                    },
+                    "paciente": {
+                        "id": visita.Paciente.id,
+                        "nombre": visita.Paciente.nombre,
+                        "cedula": visita.Paciente.cedula,
+                        "edad": visita.Paciente.edad
+                    }
                 }
+                for visita in visitas
+            ]
+            
+            logger.info(f"Listadas {len(resultado)} visitas con datos de pacientes")
+            return {
+                "visitas_con_pacientes": resultado,
+                "count": len(resultado),
+                "timestamp": datetime.now().isoformat()
             }
-            for visita in visitas
-        ]
-        
-        return resultado
+            
+    except Exception as e:
+        logger.error(f"Error listando visitas con pacientes: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 @app.post("/rppg/")
 async def analyze_video(file: UploadFile = File(...)):
     if not RPPG_AVAILABLE or not VITALS_AVAILABLE:
+        logger.error("RPPG processing requested but not available")
         return JSONResponse(
             status_code=503,
             content={
                 "error": "RPPG processing is not available. OpenCV or related dependencies are not properly installed.",
-                "message": "Please check the server configuration."
+                "message": "Please check the server configuration.",
+                "timestamp": datetime.now().isoformat()
             }
         )
     
     try:
+        # Validar archivo
+        if not file.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Archivo no válido"
+            )
+        
+        # Validar tipo de archivo
+        allowed_extensions = ['.mp4', '.avi', '.mov', '.mkv']
+        file_extension = os.path.splitext(file.filename)[1].lower()
+        if file_extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Tipo de archivo no soportado. Formatos permitidos: {', '.join(allowed_extensions)}"
+            )
+        
         # Crear un archivo temporal
-        with tempfile.NamedTemporaryFile(delete=True) as tmp:
+        with tempfile.NamedTemporaryFile(delete=True, suffix=file_extension) as tmp:
             # Guardar el archivo subido en el archivo temporal
-            tmp.write(await file.read())
+            content = await file.read()
+            if len(content) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="El archivo está vacío"
+                )
+            
+            tmp.write(content)
             tmp.flush()
+
+            logger.info(f"Procesando video: {file.filename}")
 
             # Leer el video y detectar la cara
             fps, time, sig, bvp, ibi, hr = read_video_with_face_detection_and_FS(tmp.name, CHROME_DEHAAN)
@@ -169,9 +655,12 @@ async def analyze_video(file: UploadFile = File(...)):
             # Calcular la variabilidad de la frecuencia cardíaca (HRV)
             hrv = calculate_hrv(ibi)
 
+            logger.info(f"Video procesado exitosamente: {file.filename}")
+
             # Retornar los resultados
             return JSONResponse(content={
                 "message": "Video processed successfully",
+                "filename": file.filename,
                 "fps": fps,
                 "time": time,
                 "sig": sig.tolist(),
@@ -179,34 +668,94 @@ async def analyze_video(file: UploadFile = File(...)):
                 "ibi": ibi.tolist(),
                 "hr": hr.tolist(),
                 "respiratory_rate": respiratory_rate,
-                "hrv": hrv
+                "hrv": hrv,
+                "timestamp": datetime.now().isoformat()
             })
+            
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Error processing video: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return JSONResponse(
             status_code=500,
             content={
                 "error": "Error processing video",
-                "message": str(e)
+                "message": str(e),
+                "timestamp": datetime.now().isoformat()
             }
         )
 
 # Endpoint para registrar diagnostico
 @app.post("/diagnosticos/")
 def crear_diagnostico(visita_id: int, diagnostico: str, resultado_rppg: str, informe_prediagnostico: str):
-    diag = Diagnostico(
-        visita_id=visita_id,
-        diagnostico=diagnostico,
-        resultado_rppg=resultado_rppg,
-        informe_prediagnostico=informe_prediagnostico
-    )
-    with Session(engine) as session:
-        session.add(diag)
-        session.commit()
-        session.refresh(diag)
-    return diag
+    try:
+        # Validar datos
+        if not diagnostico or len(diagnostico.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El diagnóstico es requerido"
+            )
+        
+        if not resultado_rppg or len(resultado_rppg.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El resultado RPGP es requerido"
+            )
+        
+        with Session(engine) as session:
+            # Verificar que la visita existe
+            visita = session.exec(select(Visita).where(Visita.id == visita_id)).first()
+            if not visita:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Visita no encontrada"
+                )
+            
+            # Crear diagnóstico
+            diag = Diagnostico(
+                visita_id=visita_id,
+                diagnostico=diagnostico.strip(),
+                resultado_rppg=resultado_rppg.strip(),
+                informe_prediagnostico=informe_prediagnostico.strip()
+            )
+            
+            session.add(diag)
+            session.commit()
+            session.refresh(diag)
+            
+            logger.info(f"Diagnóstico creado para visita {visita_id}")
+            return {
+                "message": "Diagnóstico creado exitosamente",
+                "diagnostico": diag,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creando diagnóstico: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 @app.get("/diagnosticos/")
 def listar_diagnosticos():
-    with Session(engine) as session:
-        diagnosticos = session.exec(select(Diagnostico)).all()
-    return diagnosticos
+    try:
+        with Session(engine) as session:
+            diagnosticos = session.exec(select(Diagnostico)).all()
+            
+        logger.info(f"Listados {len(diagnosticos)} diagnósticos")
+        return {
+            "diagnosticos": diagnosticos,
+            "count": len(diagnosticos),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listando diagnósticos: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )

@@ -1,8 +1,10 @@
+# Usa una imagen base de Python 3.11 optimizada
 FROM python:3.11-slim
 
-# Instalar dependencias del sistema necesarias para OpenCV
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+# Instala las dependencias del sistema necesarias para OpenCV y otras bibliotecas.
+# Se han actualizado los nombres de los paquetes para la compatibilidad con Debian Bookworm.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -18,27 +20,27 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     libpng-dev \
     libtiff-dev \
-    libatlas-base-dev \
+    libatlas3-base \
     gfortran \
     && rm -rf /var/lib/apt/lists/*
 
-# Establecer el directorio de trabajo
+# Establece el directorio de trabajo dentro del contenedor
 WORKDIR /app
 
-# Copiar los archivos de dependencias
+# Copia los archivos de dependencias de Python
 COPY requirements.txt .
 
-# Instalar dependencias de Python
+# Instala las dependencias de Python especificadas en requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el código de la aplicación
+# Copia el resto del código de la aplicación
 COPY . .
 
-# Hacer el script de inicio ejecutable
+# Hace que el script de inicio sea ejecutable
 RUN chmod +x start.sh
 
-# Exponer el puerto
+# Expone el puerto por el que se ejecutará la aplicación
 EXPOSE 8000
 
-# Comando para ejecutar la aplicación
-CMD ["./start.sh"] 
+# Define el comando principal para ejecutar la aplicación
+CMD ["./start.sh"]

@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: mi-backend-fastapi
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
+    postDeployCommand: "python api/simular_bd.py"
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: mi-base-de-datos
+          type: postgres
+          property: connectionString

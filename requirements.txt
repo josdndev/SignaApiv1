@@ -6,4 +6,6 @@ cvzone
 numpy
 mediapipe
 sqlmodel
+sqlalchemy
+psycopg2-binary
 python-multipart

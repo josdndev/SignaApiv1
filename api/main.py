@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 import traceback
 from pydantic import BaseModel
+import os
 
 # Importar manejadores de eventos y errores
 from .error_handlers import (
@@ -89,7 +90,8 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(Exception, general_exception_handler)
 
 # Configurar base de datos
-engine = create_engine("sqlite:///database.db", echo=False)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database.db")
+engine = create_engine(DATABASE_URL)
 SQLModel.metadata.create_all(engine)
 
 # Modelos Pydantic para validación de entrada

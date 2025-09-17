@@ -8,6 +8,6 @@ services:
     envVars:
       - key: DATABASE_URL
         fromService:
-          name: mi-base-de-datos
+          name: hospitall
           type: postgres
           property: connectionString

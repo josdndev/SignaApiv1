@@ -1013,16 +1013,53 @@ def populate_db(secret: str = Query(...)):
     from sqlmodel import Session
     from .models import Doctor, Paciente, HistoriaClinica, Visita, Diagnostico
 
-    doctores = [
-        {"nombre": "Dr. Juan Cardona", "email": "juan.cardona@gmail.com", "google_id": "1001", "especialidad": "Cardiología"},
-        {"nombre": "Dra. Ana Torres", "email": "ana.torres@gmail.com", "google_id": "1002", "especialidad": "Pediatría"},
-        {"nombre": "Dr. Luis Mendoza", "email": "luis.mendoza@gmail.com", "google_id": "1003", "especialidad": "Medicina General"}
+    default_password_hash = hash_password("password123")
+
+    especialidades = [
+        "Cardiología", "Pediatría", "Medicina General", "Neurología", "Ginecología",
+        "Traumatología", "Dermatología", "Oftalmología", "Otorrinolaringología", "Psiquiatría",
+        "Endocrinología", "Nefrología", "Hematología", "Oncología", "Radiología"
     ]
 
-    nombres = [
-        "Juan Perez", "Maria Gomez", "Carlos Ruiz", "Ana Torres", "Luis Mendoza", "Sofia Castro", "Pedro Diaz", "Lucia Fernandez", "Miguel Lopez", "Laura Morales",
-        "Jorge Herrera", "Valentina Rios", "Andres Vargas", "Camila Suarez", "Ricardo Soto", "Paula Jimenez", "Fernando Silva", "Gabriela Ortiz", "Diego Romero", "Isabel Navarro",
-        "Sebastian Cruz", "Monica Salazar", "Hector Paredes", "Patricia Aguirre", "Oscar Castillo", "Daniela Ponce", "Raul Cordero", "Carolina Espinoza", "Julio Zamora", "Estefania Leon"
+    doctores = []
+    for i in range(15):
+        nombre = f"Dr. {random.choice(['Juan', 'Carlos', 'Luis', 'Miguel', 'José', 'Antonio', 'Francisco', 'Javier', 'Manuel', 'Pedro', 'Ángel', 'David', 'José Luis', 'Jesús', 'Alejandro'])} {random.choice(['García', 'Rodríguez', 'González', 'Fernández', 'López', 'Martínez', 'Sánchez', 'Pérez', 'Martín', 'Ruiz', 'Hernández', 'Jiménez', 'Díaz', 'Moreno', 'Álvarez'])}"
+        if random.choice([True, False]):
+            nombre = nombre.replace("Dr.", "Dra.")
+        email = f"{nombre.lower().replace(' ', '.').replace('dr.', '').replace('dra.', '')}@hospital.com"
+        cedula = f"DOC{i+1:03d}"
+        especialidad = random.choice(especialidades)
+        doctores.append({
+            "nombre": nombre,
+            "email": email,
+            "cedula": cedula,
+            "password_hash": default_password_hash,
+            "google_id": f"{1000+i}",
+            "especialidad": especialidad,
+            "role": "doctor",
+            "active": True
+        })
+
+    nombres_comunes = [
+        "María", "José", "Juan", "Ana", "Luis", "Carlos", "Antonio", "Francisco", "Javier", "Manuel",
+        "Pedro", "Ángel", "David", "José Luis", "Jesús", "Alejandro", "Miguel", "Rafael", "Fernando", "Pablo",
+        "Daniel", "Sergio", "Jorge", "Alberto", "Diego", "Rubén", "Enrique", "Víctor", "Adrián", "Óscar",
+        "Carmen", "Isabel", "Dolores", "Pilar", "Teresa", "Ana María", "Cristina", "Mónica", "Francisca", "Laura",
+        "Mercedes", "Antonia", "Rosa", "Concepción", "Encarnación", "María José", "María Dolores", "María Carmen", "María Pilar", "María Teresa"
+    ]
+
+    apellidos_comunes = [
+        "García", "Rodríguez", "González", "Fernández", "López", "Martínez", "Sánchez", "Pérez", "Martín", "Ruiz",
+        "Hernández", "Jiménez", "Díaz", "Moreno", "Álvarez", "Muñoz", "Romero", "Navarro", "Torres", "Domínguez",
+        "Gil", "Vázquez", "Serrano", "Ramos", "Blanco", "Sanz", "Castro", "Ortega", "Delgado", "Rubio"
+    ]
+
+    diagnosticos_posibles = [
+        "Hipertensión", "Diabetes Mellitus", "Resfriado Común", "Migraña", "Dermatitis Atópica",
+        "Arritmia Cardíaca", "Bronquitis", "Gastritis", "Artrosis", "Depresión",
+        "Anemia", "Hipotiroidismo", "Asma", "Cálculos Renales", "Sinusitis",
+        "Varices", "Hemorragia Nasal", "Tendinitis", "Conjuntivitis", "Otitis",
+        "Sin diagnóstico específico", "Seguimiento", "Chequeo rutinario"
     ]
 
     triaje = ["Rojo", "Amarillo", "Verde"]
@@ -1034,42 +1071,57 @@ def populate_db(secret: str = Query(...)):
                 doctor = Doctor(**doc)
                 session.add(doctor)
             session.commit()
-            # Pacientes
-            for i in range(30):
+
+            # Pacientes (150 pacientes)
+            pacientes_creados = []
+            for i in range(150):
+                nombre = f"{random.choice(nombres_comunes)} {random.choice(apellidos_comunes)} {random.choice(apellidos_comunes)}"
                 paciente = Paciente(
-                    nombre=nombres[i],
+                    nombre=nombre,
                     cedula=f"V{random.randint(10000000,99999999)}",
                     edad=random.randint(1, 99)
                 )
                 session.add(paciente)
                 session.commit()
                 session.refresh(paciente)
-                # Historia clínica
-                historia = HistoriaClinica(paciente_id=paciente.id, fecha=(datetime(2025,7,27) - timedelta(days=random.randint(0,365))).strftime('%Y-%m-%d'))
-                session.add(historia)
-                session.commit()
-                session.refresh(historia)
-                # Visitas y Diagnósticos
-                for v in range(random.randint(1,2)):
-                    visita = Visita(
-                        historia_id=historia.id,
-                        hora_entrada=f"2025-07-27T{random.randint(8,18)}:{random.randint(0,59):02d}",
-                        evaluacion_triaje=random.choice(triaje),
-                        prediagnostico=f"Prediagnóstico automático {v+1}",
-                        especialidad=random.choice([d["especialidad"] for d in doctores]),
-                        numero_visita=v+1
+                pacientes_creados.append(paciente)
+
+                # Historia clínica (80% tienen historia)
+                if random.random() < 0.8:
+                    historia = HistoriaClinica(
+                        paciente_id=paciente.id,
+                        fecha=(datetime.now() - timedelta(days=random.randint(0,730))).strftime('%Y-%m-%d')
                     )
-                    session.add(visita)
+                    session.add(historia)
                     session.commit()
-                    session.refresh(visita)
-                    for d in range(random.randint(1,2)):
-                        diag = Diagnostico(
-                            visita_id=visita.id,
-                            diagnostico=random.choice(["Hipertensión", "Resfriado", "Migraña", "Dermatitis", "Arritmia", "Sin diagnóstico"]),
-                            resultado_rppg=f"HR:{random.randint(60,100)} RR:{random.randint(12,20)} SDNN:{random.randint(20,80)} RMSSD:{random.randint(20,80)}",
-                            informe_prediagnostico=f"Informe generado automáticamente para {paciente.nombre} en visita {v+1}."
+                    session.refresh(historia)
+
+                    # Visitas (1-5 visitas por historia)
+                    num_visitas = random.randint(1, 5)
+                    for v in range(num_visitas):
+                        fecha_visita = datetime.now() - timedelta(days=random.randint(0, 365))
+                        visita = Visita(
+                            historia_id=historia.id,
+                            hora_entrada=fecha_visita.strftime('%Y-%m-%dT%H:%M'),
+                            evaluacion_triaje=random.choice(triaje),
+                            prediagnostico=f"Evaluación inicial - Visita {v+1}",
+                            especialidad=random.choice(especialidades),
+                            numero_visita=v+1
                         )
-                        session.add(diag)
+                        session.add(visita)
+                        session.commit()
+                        session.refresh(visita)
+
+                        # Diagnósticos (1-3 por visita)
+                        num_diag = random.randint(1, 3)
+                        for d in range(num_diag):
+                            diag = Diagnostico(
+                                visita_id=visita.id,
+                                diagnostico=random.choice(diagnosticos_posibles),
+                                resultado_rppg=f"HR:{random.randint(50,120)} RR:{random.randint(10,25)} SDNN:{random.randint(15,100)} RMSSD:{random.randint(15,100)}",
+                                informe_prediagnostico=f"Informe médico generado para {paciente.nombre}. Visita {v+1}, diagnóstico {d+1}."
+                            )
+                            session.add(diag)
             session.commit()
         return {"message": "Base de datos simulada con doctores, pacientes, historias, visitas y diagnósticos."}
     except Exception as e:

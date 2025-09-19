@@ -5,9 +5,12 @@ class Doctor(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     nombre: str
     email: str
+    cedula: str = Field(unique=True, index=True)
+    password_hash: str
     google_id: Optional[str] = Field(default=None)
     especialidad: Optional[str] = Field(default=None)
-    # Puedes agregar más campos según lo que requiera la autenticación y perfil
+    role: str = Field(default="doctor")  # "super" or "doctor"
+    active: bool = Field(default=True)
 
 class Paciente(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

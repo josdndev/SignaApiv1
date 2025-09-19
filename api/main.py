@@ -11,6 +11,14 @@ from typing import Dict, Any, Optional
 import traceback
 from pydantic import BaseModel
 import os
+import bcrypt
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+
+# Configuración JWT
+SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Importar manejadores de eventos y errores
 from .error_handlers import (
@@ -123,6 +131,25 @@ class DiagnosticoCreate(BaseModel):
     diagnostico: str
     resultado_rppg: str
     informe_prediagnostico: str
+
+# Modelos Pydantic para autenticación
+class DoctorAuthCreate(BaseModel):
+    nombre: str
+    email: str
+    cedula: str
+    password: str
+    especialidad: Optional[str] = None
+
+class DoctorLogin(BaseModel):
+    cedula: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    cedula: Optional[str] = None
 
 # Middleware para logging de requests
 @app.middleware("http")
@@ -240,6 +267,182 @@ def validate_paciente_data(nombre: str, cedula: str, edad: int) -> Dict[str, Any
         )
     
     return {"nombre": nombre.strip(), "cedula": cedula.strip(), "edad": edad}
+
+# Funciones helper para auth
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+
+def verificar_password(password_plana: str, hash: str) -> bool:
+    return bcrypt.checkpw(password_plana.encode('utf-8'), hash.encode('utf-8'))
+
+def crear_token_acceso(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def authenticate_doctor(cedula: str, password: str):
+    with Session(engine) as session:
+        doctor = session.exec(select(Doctor).where(Doctor.cedula == cedula)).first()
+        if not doctor:
+            return False
+        if not verificar_password(password, doctor.password_hash):
+            return False
+        return doctor
+
+# Endpoints de autenticación
+@app.post("/auth/login", response_model=Token)
+def login_doctor(login_data: DoctorLogin):
+    doctor = authenticate_doctor(login_data.cedula, login_data.password)
+    if not doctor:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Cédula o contraseña incorrecta",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = crear_token_acceso(data={"sub": doctor.cedula})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/auth/register-doctor")
+def register_new_doctor(
+    doctor_data: DoctorAuthCreate,
+    secret: str = Query(...)
+):
+    if secret != "medicos2024":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Clave secreta incorrecta"
+        )
+
+    errors = []
+    if not doctor_data.nombre or len(doctor_data.nombre.strip()) < 2:
+        errors.append("El nombre debe tener al menos 2 caracteres")
+    if not doctor_data.email or '@' not in doctor_data.email:
+        errors.append("El email no es válido")
+    if not doctor_data.cedula or len(doctor_data.cedula.strip()) < 5:
+        errors.append("La cédula debe tener al menos 5 caracteres")
+    if not doctor_data.password or len(doctor_data.password) < 6:
+        errors.append("La contraseña debe tener al menos 6 caracteres")
+
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Datos inválidos", "errors": errors}
+        )
+
+    with Session(engine) as session:
+        existing_doctor = session.exec(
+            select(Doctor).where(
+                (Doctor.email == doctor_data.email) | (Doctor.cedula == doctor_data.cedula)
+            )
+        ).first()
+        if existing_doctor:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya existe un doctor con este email o cédula"
+            )
+
+        password_hash = hash_password(doctor_data.password)
+        new_doctor = Doctor(
+            nombre=doctor_data.nombre.strip(),
+            email=doctor_data.email.strip(),
+            cedula=doctor_data.cedula.strip(),
+            password_hash=password_hash,
+            especialidad=doctor_data.especialidad.strip() if doctor_data.especialidad else None,
+            role="doctor",
+            active=True
+        )
+
+        session.add(new_doctor)
+        session.commit()
+        session.refresh(new_doctor)
+
+        logger.info(f"Doctor registrado: {new_doctor.cedula}")
+        return {
+            "message": "Doctor registrado exitosamente",
+            "doctor": {
+                "id": new_doctor.id,
+                "nombre": new_doctor.nombre,
+                "email": new_doctor.email,
+                "cedula": new_doctor.cedula,
+                "especialidad": new_doctor.especialidad,
+                "role": new_doctor.role
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.post("/auth/create-super")
+def create_super_user(
+    nombre: str,
+    email: str,
+    cedula: str,
+    password: str,
+    secret: str = Query(...)
+):
+    if secret != "super2024":
+        raise HTTPException(status_code=400, detail="Clave secreta incorrecta")
+
+    with Session(engine) as session:
+        existing_super = session.exec(select(Doctor).where(Doctor.role == "super")).first()
+        if existing_super:
+            raise HTTPException(status_code=409, detail="Ya existe un super usuario")
+
+        password_hash = hash_password(password)
+        super_user = Doctor(
+            nombre=nombre,
+            email=email,
+            cedula=cedula,
+            password_hash=password_hash,
+            especialidad="Administrador",
+            role="super",
+            active=True
+        )
+
+        session.add(super_user)
+        session.commit()
+        session.refresh(super_user)
+
+    return {"message": "Super usuario creado", "doctor": super_user}
+
+# DEPENDENCY para obtener doctor actual
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends
+
+def get_current_doctor(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="No se pudo validar las credenciales",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        cedula: str = payload.get("sub")
+        if cedula is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    with Session(engine) as session:
+        doctor = session.exec(select(Doctor).where(Doctor.cedula == cedula)).first()
+    if doctor is None:
+        raise credentials_exception
+    return doctor
+
+@app.get("/auth/me")
+def read_doctor_me(current_doctor: Doctor = Depends(get_current_doctor)):
+    return {
+        "doctor": {
+            "id": current_doctor.id,
+            "nombre": current_doctor.nombre,
+            "email": current_doctor.email,
+            "cedula": current_doctor.cedula,
+            "especialidad": current_doctor.especialidad,
+            "role": current_doctor.role
+        },
+        "timestamp": datetime.now().isoformat()
+    }
 
 # Endpoint de healthcheck
 @app.get("/")

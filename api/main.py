@@ -1066,10 +1066,14 @@ def populate_db(secret: str = Query(...)):
 
     try:
         with Session(engine) as session:
-            # Doctores
+            # Doctores - verificar si ya existen antes de agregar
             for doc in doctores:
-                doctor = Doctor(**doc)
-                session.add(doctor)
+                existing_doctor = session.exec(
+                    select(Doctor).where(Doctor.cedula == doc["cedula"])
+                ).first()
+                if not existing_doctor:
+                    doctor = Doctor(**doc)
+                    session.add(doctor)
             session.commit()
 
             # Pacientes (150 pacientes)

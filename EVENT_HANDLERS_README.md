@@ -280,5 +280,5 @@ curl -X POST "https://signaapiv1-production.up.railway.app/doctores/" \
 ---
 
 **Estado**: ✅ **Implementado y Funcionando**
-**Última Actualización**: Enero 2024
-**Versión**: 1.0.0 
+**Última Actualización**: Septiembre 2025
+**Versión**: 1.1.0

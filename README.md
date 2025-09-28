@@ -4,18 +4,43 @@
 API clínica para gestión de pacientes, doctores, historias clínicas, visitas y diagnósticos. Compatible con autenticación de doctores vía Google.
 
 ## Estructura de la base de datos
-- **Doctor**: id, nombre, email, google_id, especialidad
+- **Doctor**: id, nombre, email, cedula, password_hash, google_id, especialidad, role, active
 - **Paciente**: id, nombre, cedula, edad
 - **HistoriaClinica**: id, paciente_id, fecha
 - **Visita**: id, historia_id, hora_entrada, evaluacion_triaje, prediagnostico, especialidad, numero_visita
 - **Diagnostico**: id, visita_id, diagnostico, resultado_rppg, informe_prediagnostico
+- **SensorReading**: id, device_id, paciente_id, visita_id, sensor_type, heart_rate, timestamp
 
 ## Endpoints principales
-- POST/GET /doctores/
-- POST/GET /pacientes/
-- POST/GET /historias/
-- POST/GET /visitas/
-- POST/GET /diagnosticos/
+
+### Autenticación
+- POST /auth/login - Login de doctor
+- POST /auth/register-doctor - Registro de doctor
+- POST /auth/create-super - Crear super usuario
+- GET /auth/me - Información del doctor actual
+
+### Gestión de Datos
+- POST/GET /doctores/ - CRUD doctores
+- POST/GET /pacientes/ - CRUD pacientes
+- POST/GET /historias/ - CRUD historias clínicas
+- POST/GET /visitas/ - CRUD visitas
+- GET /visitas_con_pacientes/ - Visitas con datos del paciente
+- POST/GET /diagnosticos/ - CRUD diagnósticos
+
+### Datos de Sensores
+- POST /sensor-data/ - Crear lectura de sensor
+- GET /sensor-data/ - Listar lecturas de sensores
+- GET /sensor-data/latest/{paciente_id} - Última lectura de sensor
+
+### Procesamiento rPPG
+- POST /rppg/ - Procesar video para extracción de señales vitales
+
+### Sistema
+- GET / - Health check
+- GET /health - Health check alternativo
+- GET /test-cors - Prueba de CORS
+- GET /metrics - Métricas del sistema
+- POST /populate-db - Poblar base de datos con datos simulados
 
 ## Simulación de datos
 Ejecuta:

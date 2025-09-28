@@ -18,6 +18,7 @@ class Paciente(SQLModel, table=True):
     cedula: str
     edad: int
     historias: List["HistoriaClinica"] = Relationship(back_populates="paciente")
+    sensor_readings: List["SensorReading"] = Relationship(back_populates="paciente")
 
 class HistoriaClinica(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -35,6 +36,7 @@ class Visita(SQLModel, table=True):
     especialidad: str
     numero_visita: int
     diagnosticos: List["Diagnostico"] = Relationship(back_populates="visita")
+    sensor_readings: List["SensorReading"] = Relationship(back_populates="visita")
     historia: Optional[HistoriaClinica] = Relationship(back_populates="visitas")
 
 class Diagnostico(SQLModel, table=True):
@@ -44,3 +46,14 @@ class Diagnostico(SQLModel, table=True):
     resultado_rppg: str
     informe_prediagnostico: str
     visita: Optional[Visita] = Relationship(back_populates="diagnosticos")
+
+class SensorReading(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    device_id: str = Field(index=True)
+    paciente_id: Optional[int] = Field(default=None, foreign_key="paciente.id")
+    visita_id: Optional[int] = Field(default=None, foreign_key="visita.id")
+    sensor_type: str
+    heart_rate: Optional[int] = Field(default=None)
+    timestamp: str
+    paciente: Optional[Paciente] = Relationship(back_populates="sensor_readings")
+    visita: Optional[Visita] = Relationship(back_populates="sensor_readings")

@@ -69,7 +69,7 @@ except ImportError as e:
     VITALS_AVAILABLE = False
 
 from sqlmodel import SQLModel, Session, create_engine, select
-from .models import Doctor, Paciente, HistoriaClinica, Visita, Diagnostico
+from .models import Doctor, Paciente, HistoriaClinica, Visita, Diagnostico, SensorReading
 
 app = FastAPI(
     title="SignaApi",
@@ -131,6 +131,14 @@ class DiagnosticoCreate(BaseModel):
     diagnostico: str
     resultado_rppg: str
     informe_prediagnostico: str
+
+class SensorDataCreate(BaseModel):
+    device_id: str
+    paciente_id: Optional[int] = None
+    visita_id: Optional[int] = None
+    sensor_type: str
+    heart_rate: Optional[int] = None
+    timestamp: str
 
 # Modelos Pydantic para autenticación
 class DoctorAuthCreate(BaseModel):
@@ -888,13 +896,41 @@ async def analyze_video(file: UploadFile = File(...)):
             logger.info(f"Procesando video: {file.filename}")
 
             # Leer el video y detectar la cara
-            fps, time, sig, bvp, ibi, hr = read_video_with_face_detection_and_FS(tmp.name, CHROME_DEHAAN)
+            face_frames, fps = read_video_with_face_detection_and_FS(tmp.name)
+
+            if face_frames is None or fps is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No se pudieron detectar caras en el video o el video es inválido"
+                )
+
+            # Procesar el video con CHROME-DEHAAN
+            bvp = CHROME_DEHAAN(face_frames, fps)
+
+            if bvp is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Error al procesar la señal BVP del video"
+                )
+
+            # Extraer frecuencia cardíaca
+            hr, peaks = extract_heart_rate(bvp, fps)
+
+            if hr is None:
+                hr = 0  # Valor por defecto si no se puede calcular
+                peaks = []  # Lista vacía si no se puede calcular
 
             # Calcular la tasa de respiración
-            respiratory_rate = extract_respiratory_rate(sig, fps)
+            respiratory_rate = extract_respiratory_rate(bvp, fps)
+
+            if respiratory_rate is None:
+                respiratory_rate = 0  # Valor por defecto
 
             # Calcular la variabilidad de la frecuencia cardíaca (HRV)
-            hrv = calculate_hrv(ibi)
+            hrv = calculate_hrv(peaks, fps)
+
+            if hrv is None:
+                hrv = (0, 0)  # Valores por defecto
 
             logger.info(f"Video procesado exitosamente: {file.filename}")
 
@@ -903,13 +939,11 @@ async def analyze_video(file: UploadFile = File(...)):
                 "message": "Video processed successfully",
                 "filename": file.filename,
                 "fps": fps,
-                "time": time,
-                "sig": sig.tolist(),
-                "bvp": bvp.tolist(),
-                "ibi": ibi.tolist(),
-                "hr": hr.tolist(),
-                "respiratory_rate": respiratory_rate,
-                "hrv": hrv,
+                "bvp": bvp.tolist() if hasattr(bvp, 'tolist') else list(bvp),
+                "ibi": list(peaks) if peaks else [],
+                "hr": hr if isinstance(hr, (int, float)) else 0,
+                "respiratory_rate": respiratory_rate if isinstance(respiratory_rate, (int, float)) else 0,
+                "hrv": hrv if isinstance(hrv, (tuple, list)) else [0, 0],
                 "timestamp": datetime.now().isoformat()
             })
             
@@ -986,16 +1020,153 @@ def listar_diagnosticos():
     try:
         with Session(engine) as session:
             diagnosticos = session.exec(select(Diagnostico)).all()
-            
+
         logger.info(f"Listados {len(diagnosticos)} diagnósticos")
         return {
             "diagnosticos": diagnosticos,
             "count": len(diagnosticos),
             "timestamp": datetime.now().isoformat()
         }
-        
+
     except Exception as e:
         logger.error(f"Error listando diagnósticos: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
+
+# Endpoints para datos de sensores
+@app.post("/sensor-data/")
+def create_sensor_reading(sensor_data: SensorDataCreate):
+    try:
+        # Validar datos básicos
+        if not sensor_data.device_id or len(sensor_data.device_id.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Device ID es requerido"
+            )
+
+        if not sensor_data.sensor_type or len(sensor_data.sensor_type.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tipo de sensor es requerido"
+            )
+
+        with Session(engine) as session:
+            # Crear lectura del sensor
+            reading = SensorReading(
+                device_id=sensor_data.device_id.strip(),
+                paciente_id=sensor_data.paciente_id,
+                visita_id=sensor_data.visita_id,
+                sensor_type=sensor_data.sensor_type.strip(),
+                heart_rate=sensor_data.heart_rate,
+                timestamp=sensor_data.timestamp.strip()
+            )
+
+            session.add(reading)
+            session.commit()
+            session.refresh(reading)
+
+            logger.info(f"Lectura del sensor creada: {sensor_data.device_id} - HR: {sensor_data.heart_rate}")
+            return {
+                "message": "Lectura del sensor creada exitosamente",
+                "reading": {
+                    "id": reading.id,
+                    "device_id": reading.device_id,
+                    "paciente_id": reading.paciente_id,
+                    "visita_id": reading.visita_id,
+                    "sensor_type": reading.sensor_type,
+                    "heart_rate": reading.heart_rate,
+                    "timestamp": reading.timestamp
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creando lectura del sensor: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
+
+@app.get("/sensor-data/")
+def get_sensor_readings(
+    device_id: Optional[str] = None,
+    paciente_id: Optional[int] = None,
+    limit: int = 100
+):
+    try:
+        with Session(engine) as session:
+            query = select(SensorReading)
+
+            if device_id:
+                query = query.where(SensorReading.device_id == device_id)
+            if paciente_id:
+                query = query.where(SensorReading.paciente_id == paciente_id)
+
+            readings = session.exec(query.order_by(SensorReading.timestamp.desc()).limit(limit)).all()
+
+        logger.info(f"Listadas {len(readings)} lecturas del sensor")
+        return {
+            "readings": [
+                {
+                    "id": reading.id,
+                    "device_id": reading.device_id,
+                    "paciente_id": reading.paciente_id,
+                    "visita_id": reading.visita_id,
+                    "sensor_type": reading.sensor_type,
+                    "heart_rate": reading.heart_rate,
+                    "timestamp": reading.timestamp
+                }
+                for reading in readings
+            ],
+            "count": len(readings),
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error listando lecturas del sensor: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
+
+@app.get("/sensor-data/latest/{paciente_id}")
+def get_latest_sensor_reading(paciente_id: int):
+    try:
+        with Session(engine) as session:
+            reading = session.exec(
+                select(SensorReading)
+                .where(SensorReading.paciente_id == paciente_id)
+                .order_by(SensorReading.timestamp.desc())
+                .limit(1)
+            ).first()
+
+            if not reading:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No se encontraron lecturas para este paciente"
+                )
+
+        return {
+            "reading": {
+                "id": reading.id,
+                "device_id": reading.device_id,
+                "paciente_id": reading.paciente_id,
+                "visita_id": reading.visita_id,
+                "sensor_type": reading.sensor_type,
+                "heart_rate": reading.heart_rate,
+                "timestamp": reading.timestamp
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error obteniendo última lectura del sensor: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno del servidor"

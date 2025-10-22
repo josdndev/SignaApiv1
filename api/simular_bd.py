@@ -1,14 +1,12 @@
 import os
 import random
 from datetime import datetime, timedelta
-from sqlmodel import Session, create_engine
+from sqlmodel import Session
 from api.models import Doctor, Paciente, HistoriaClinica, Visita, Diagnostico
+# Reusar el engine creado en api.main para asegurar una única configuración de conexión
+from api.main import engine
 
-# Usar la variable de entorno DATABASE_URL para conectar a la base de datos correcta
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database.db")
-engine = create_engine(DATABASE_URL)
-
-print(f"Conectando a la base de datos: {DATABASE_URL}")
+print("Conectando a la base de datos usando el engine de api.main")
 
 doctores = [
     {"nombre": "Dr. Juan Cardona", "email": "juan.cardona@gmail.com", "google_id": "1001", "especialidad": "Cardiología"},

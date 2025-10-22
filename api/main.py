@@ -98,8 +98,19 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(Exception, general_exception_handler)
 
 # Configurar base de datos
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database.db")
-engine = create_engine(DATABASE_URL)
+# Priorizar una URL pública si está presente (por ejemplo: DATABASE_PUBLIC_URL),
+# luego DATABASE_URL; si no hay ninguna, usar SQLite local para desarrollo.
+DATABASE_URL = os.getenv("DATABASE_PUBLIC_URL") or os.getenv("DATABASE_URL") or "sqlite:///database.db"
+logger.info(f"Usando DATABASE_URL: {DATABASE_URL}")
+
+# Crear engine adaptando parámetros según el motor (sqlite necesita connect_args)
+if DATABASE_URL.startswith("sqlite"):
+    # Para SQLite en entornos multihilo (uvicorn) permitir check_same_thread False
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    # Para PostgreSQL y otros, activar pool_pre_ping para evitar conexiones muertas
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
 SQLModel.metadata.create_all(engine)
 
 # Modelos Pydantic para validación de entrada

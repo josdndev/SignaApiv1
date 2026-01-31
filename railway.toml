@@ -8,4 +8,6 @@ healthcheckTimeout = 600
 restartPolicyType = "on_failure"
 
 [deploy.envs]
-PYTHON_VERSION = "3.11" 
+PYTHON_VERSION = "3.11"
+DATABASE_URL = "${{ DATABASE_URL }}"
+DATABASE_PUBLIC_URL = "${{ DATABASE_PUBLIC_URL }}" 

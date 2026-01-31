@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.simple
+    container_name: signaapi
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:yAIFoMtwAPNOFVqwoJAHEmNpTDewqPWG@db:5432/railway
+      - DATABASE_PUBLIC_URL=postgresql://postgres:yAIFoMtwAPNOFVqwoJAHEmNpTDewqPWG@localhost:5432/railway
+      - SECRET_KEY=your-super-secret-key-change-in-production
+      - PYTHONPATH=/app
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    container_name: signaapi-db
+    environment:
+      - POSTGRES_DB=railway
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=yAIFoMtwAPNOFVqwoJAHEmNpTDewqPWG
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d railway"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

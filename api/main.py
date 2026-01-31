@@ -98,18 +98,26 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(Exception, general_exception_handler)
 
 # Configurar base de datos
-# Priorizar una URL pública si está presente (por ejemplo: DATABASE_PUBLIC_URL),
-# luego DATABASE_URL; si no hay ninguna, usar SQLite local para desarrollo.
-DATABASE_URL = os.getenv("DATABASE_PUBLIC_URL") or os.getenv("DATABASE_URL") or "sqlite:///database.db"
-logger.info(f"Usando DATABASE_URL: {DATABASE_URL}")
+# 1. Obtener la URL de Railway (DATABASE_URL es para red interna, más rápida)
+database_url = os.getenv("DATABASE_URL")
+
+# 2. Fallback por si ejecutas localmente
+if not database_url:
+    database_url = "postgresql://postgres:yAIFoMtwAPNOFVqwoJAHEmNpTDewqPWG@localhost:5432/railway"
+
+# 3. Corrección crítica para SQLAlchemy (cambiar postgres:// por postgresql://)
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+logger.info(f"Usando database_url: {database_url}")
 
 # Crear engine adaptando parámetros según el motor (sqlite necesita connect_args)
-if DATABASE_URL.startswith("sqlite"):
+if database_url.startswith("sqlite"):
     # Para SQLite en entornos multihilo (uvicorn) permitir check_same_thread False
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    engine = create_engine(database_url, connect_args={"check_same_thread": False})
 else:
     # Para PostgreSQL y otros, activar pool_pre_ping para evitar conexiones muertas
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+    engine = create_engine(database_url, pool_pre_ping=True)
 
 SQLModel.metadata.create_all(engine)
 

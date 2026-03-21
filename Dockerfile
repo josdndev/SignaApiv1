@@ -26,6 +26,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar el código de la aplicación
 COPY . .
 
+# Copiar archivo de variables de entorno
+COPY .env .
+
 # Hacer ejecutable el script de inicio
 RUN chmod +x start.sh
 

@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Cargar variables de entorno desde .env si existe
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+fi
+
 # Obtener el puerto de la variable de entorno o usar 8000 por defecto
 PORT=${PORT:-8000}
 

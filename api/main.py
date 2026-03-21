@@ -103,7 +103,7 @@ database_url = os.getenv("DATABASE_URL")
 
 # 2. Fallback por si ejecutas localmente
 if not database_url:
-    database_url = "postgresql://postgres:yAIFoMtwAPNOFVqwoJAHEmNpTDewqPWG@localhost:5432/railway"
+    database_url = "postgresql://postgres:yAIFoMtwAPNOFVqwoJAHEmNpTDewqPWG@localhost:5432/signadb"
 
 # 3. Corrección crítica para SQLAlchemy (cambiar postgres:// por postgresql://)
 if database_url.startswith("postgres://"):

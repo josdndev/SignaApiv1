@@ -9,4 +9,4 @@ restartPolicyType = "on_failure"
 
 [deploy.envs]
 PYTHON_VERSION = "3.11"
-DATABASE_URL = "postgresql://postgres:yAIFoMtwAPNOFVqwoJAHEmNpTDewqPWG@crossover.proxy.rlwy.net:42276/railway"
+DATABASE_URL = "postgresql://signa-admin:Petare0107@signalife-signalife-xcgch6:5432/signadb"

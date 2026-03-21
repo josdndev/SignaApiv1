@@ -9,7 +9,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:yAIFoMtwAPNOFVqwoJAHEmNpTDewqPWG@crossover.proxy.rlwy.net:42276/railway
+      - DATABASE_URL=postgresql://signa-admin:Petare0107@signalife-signalife-xcgch6:5432/signadb
       - SECRET_KEY=your-super-secret-key-change-in-production
       - PYTHONPATH=/app
     volumes:

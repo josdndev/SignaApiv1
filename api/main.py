@@ -14,11 +14,15 @@ import os
 import bcrypt
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
+from urllib.parse import urlparse, urlunparse
 
 # Configuración JWT
 SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REGISTER_DOCTOR_SECRET = os.getenv("REGISTER_DOCTOR_SECRET", "")
+CREATE_SUPER_SECRET = os.getenv("CREATE_SUPER_SECRET", "")
+POPULATE_DB_SECRET = os.getenv("POPULATE_DB_SECRET", "")
 
 # Importar manejadores de eventos y errores
 from .error_handlers import (
@@ -70,12 +74,42 @@ except ImportError as e:
 
 from sqlmodel import SQLModel, Session, create_engine, select
 from .models import Doctor, Paciente, HistoriaClinica, Visita, Diagnostico, SensorReading
+from .db import init_db as init_saas_db
+# from .router_saas import router as saas_router
 
 app = FastAPI(
     title="SignaApi",
     description="API clínica para gestión de pacientes, doctores, historias clínicas, visitas y diagnósticos",
-    version="1.0.0"
+    version="1.0.0",
+    redirect_slashes=False
 )
+
+
+@app.on_event("startup")
+def startup_event():
+    # Create default admin user if not exists
+    try:
+        with Session(engine) as session:
+            admin = session.exec(select(Doctor).where(Doctor.cedula == "admin")).first()
+            if not admin:
+                password_hash = hash_password("admin123")
+                admin = Doctor(
+                    nombre="Admin",
+                    email="admin@example.com",
+                    cedula="admin",
+                    password_hash=password_hash,
+                    especialidad="Administrador",
+                    role="super",
+                    active=True
+                )
+                session.add(admin)
+                session.commit()
+                logger.info("Default admin user created: cedula='admin', password='admin123'")
+    except Exception as e:
+        logger.error(f"Failed to create admin user: {e}")
+
+
+# app.include_router(saas_router)
 
 # Configurar middlewares
 app.add_middleware(EventMonitoringMiddleware)
@@ -87,7 +121,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # En producción, especificar dominios específicos
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"]
 )
@@ -103,13 +137,23 @@ database_url = os.getenv("DATABASE_URL")
 
 # 2. Fallback por si ejecutas localmente
 if not database_url:
-    database_url = "postgresql://postgres:yAIFoMtwAPNOFVqwoJAHEmNpTDewqPWG@localhost:5432/signadb"
+    database_url = "sqlite:///./database.db"
 
 # 3. Corrección crítica para SQLAlchemy (cambiar postgres:// por postgresql://)
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-logger.info(f"Usando database_url: {database_url}")
+def mask_database_url(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        if parsed.password:
+            netloc = parsed.netloc.replace(f":{parsed.password}@", ":***@")
+            return urlunparse(parsed._replace(netloc=netloc))
+    except Exception:
+        pass
+    return url
+
+logger.info(f"Usando database_url: {mask_database_url(database_url)}")
 
 # Crear engine adaptando parámetros según el motor (sqlite necesita connect_args)
 if database_url.startswith("sqlite"):
@@ -166,6 +210,7 @@ class DoctorAuthCreate(BaseModel):
     cedula: str
     password: str
     especialidad: Optional[str] = None
+    role: Optional[str] = None
 
 class DoctorLogin(BaseModel):
     cedula: str
@@ -337,7 +382,7 @@ def register_new_doctor(
     doctor_data: DoctorAuthCreate,
     secret: str = Query(...)
 ):
-    if secret != "medicos2024":
+    if not REGISTER_DOCTOR_SECRET or secret != REGISTER_DOCTOR_SECRET:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Clave secreta incorrecta"
@@ -378,7 +423,7 @@ def register_new_doctor(
             cedula=doctor_data.cedula.strip(),
             password_hash=password_hash,
             especialidad=doctor_data.especialidad.strip() if doctor_data.especialidad else None,
-            role="doctor",
+            role=doctor_data.role or "doctor",
             active=True
         )
 
@@ -408,7 +453,7 @@ def create_super_user(
     password: str,
     secret: str = Query(...)
 ):
-    if secret != "super2024":
+    if not CREATE_SUPER_SECRET or secret != CREATE_SUPER_SECRET:
         raise HTTPException(status_code=400, detail="Clave secreta incorrecta")
 
     with Session(engine) as session:
@@ -534,7 +579,7 @@ def get_metrics():
         )
 
 # Endpoint para registrar doctor
-@app.post("/doctores/")
+@app.post("/doctores")
 def crear_doctor(doctor_data: DoctorCreate):
     try:
         # Validar datos
@@ -581,7 +626,7 @@ def crear_doctor(doctor_data: DoctorCreate):
         )
 
 # Endpoint para consultar doctores
-@app.get("/doctores/")
+@app.get("/doctores")
 def listar_doctores():
     try:
         with Session(engine) as session:
@@ -602,7 +647,7 @@ def listar_doctores():
         )
 
 # Endpoint para registrar paciente
-@app.post("/pacientes/")
+@app.post("/pacientes")
 def crear_paciente(paciente_data: PacienteCreate):
     try:
         # Validar datos
@@ -648,7 +693,7 @@ def crear_paciente(paciente_data: PacienteCreate):
         )
 
 # Endpoint para consultar pacientes
-@app.get("/pacientes/")
+@app.get("/pacientes")
 def listar_pacientes():
     try:
         with Session(engine) as session:
@@ -669,7 +714,7 @@ def listar_pacientes():
         )
 
 # Endpoint para registrar historia clínica
-@app.post("/historias/")
+@app.post("/historias")
 def crear_historia(historia_data: HistoriaCreate):
     try:
         # Validar datos
@@ -715,7 +760,7 @@ def crear_historia(historia_data: HistoriaCreate):
         )
 
 # Endpoint para consultar historias clínicas
-@app.get("/historias/")
+@app.get("/historias")
 def listar_historias():
     try:
         with Session(engine) as session:
@@ -736,7 +781,7 @@ def listar_historias():
         )
 
 # Endpoint para registrar visita
-@app.post("/visitas/")
+@app.post("/visitas")
 def crear_visita(visita_data: VisitaCreate):
     try:
         # Validar datos
@@ -804,7 +849,7 @@ def crear_visita(visita_data: VisitaCreate):
         )
 
 # Endpoint para consultar visitas
-@app.get("/visitas/")
+@app.get("/visitas")
 def listar_visitas():
     try:
         with Session(engine) as session:
@@ -825,7 +870,7 @@ def listar_visitas():
         )
 
 # Endpoint para obtener todas las visitas con los datos del paciente
-@app.get("/visitas_con_pacientes/")
+@app.get("/visitas_con_pacientes")
 def listar_visitas_con_pacientes():
     try:
         with Session(engine) as session:
@@ -869,7 +914,7 @@ def listar_visitas_con_pacientes():
             detail="Error interno del servidor"
         )
 
-@app.post("/rppg/")
+@app.post("/rppg")
 async def analyze_video(file: UploadFile = File(...)):
     if not RPPG_AVAILABLE or not VITALS_AVAILABLE:
         logger.error("RPPG processing requested but not available")
@@ -891,7 +936,7 @@ async def analyze_video(file: UploadFile = File(...)):
             )
         
         # Validar tipo de archivo
-        allowed_extensions = ['.mp4', '.avi', '.mov', '.mkv']
+        allowed_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
         file_extension = os.path.splitext(file.filename)[1].lower()
         if file_extension not in allowed_extensions:
             raise HTTPException(
@@ -981,7 +1026,7 @@ async def analyze_video(file: UploadFile = File(...)):
         )
 
 # Endpoint para registrar diagnostico
-@app.post("/diagnosticos/")
+@app.post("/diagnosticos")
 def crear_diagnostico(diagnostico_data: DiagnosticoCreate):
     try:
         # Validar datos
@@ -1034,7 +1079,7 @@ def crear_diagnostico(diagnostico_data: DiagnosticoCreate):
             detail="Error interno del servidor"
         )
 
-@app.get("/diagnosticos/")
+@app.get("/diagnosticos")
 def listar_diagnosticos():
     try:
         with Session(engine) as session:
@@ -1055,7 +1100,7 @@ def listar_diagnosticos():
         )
 
 # Endpoints para datos de sensores
-@app.post("/sensor-data/")
+@app.post("/sensor-data")
 def create_sensor_reading(sensor_data: SensorDataCreate):
     try:
         # Validar datos básicos
@@ -1110,7 +1155,7 @@ def create_sensor_reading(sensor_data: SensorDataCreate):
             detail="Error interno del servidor"
         )
 
-@app.get("/sensor-data/")
+@app.get("/sensor-data")
 def get_sensor_readings(
     device_id: Optional[str] = None,
     paciente_id: Optional[int] = None,
@@ -1194,8 +1239,7 @@ def get_latest_sensor_reading(paciente_id: int):
 # Endpoint protegido para poblar la base de datos con datos simulados
 @app.post("/populate-db")
 def populate_db(secret: str = Query(...)):
-    SECRET_KEY = "supersecret"  # Cambia esto por una clave segura
-    if secret != SECRET_KEY:
+    if not POPULATE_DB_SECRET or secret != POPULATE_DB_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     import random

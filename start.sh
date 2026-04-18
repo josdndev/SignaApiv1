@@ -1,8 +1,20 @@
 #!/bin/bash
 
-# Cargar variables de entorno desde .env si existe
+# Cargar variables de entorno desde .env solo si no vienen definidas
 if [ -f .env ]; then
-    export $(grep -v '^#' .env | xargs)
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        case "$line" in
+            \#*) continue ;;
+        esac
+
+        key="${line%%=*}"
+        value="${line#*=}"
+
+        if [ -n "$key" ] && [ -z "${!key:-}" ]; then
+            export "${key}=${value}"
+        fi
+    done < .env
 fi
 
 # Obtener el puerto de la variable de entorno o usar 8000 por defecto

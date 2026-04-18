@@ -9,8 +9,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://signa-admin:Petare0107@signalife-signalife-xcgch6:5432/signadb
-      - SECRET_KEY=your-super-secret-key-change-in-production
+      - DATABASE_URL=${DATABASE_URL}
+      - SAAS_DATABASE_URL=${SAAS_DATABASE_URL}
+      - SECRET_KEY=${SECRET_KEY}
+      - SAAS_SECRET_KEY=${SAAS_SECRET_KEY}
       - PYTHONPATH=/app
     volumes:
       - .:/app
